@@ -1380,3 +1380,97 @@ html, body {
   text-align: center;
   padding: 20px;
 }
+
+/* ====== 手势远程操控样式 ====== */
+
+/* 摄像头预览容器 */
+.camera-preview {
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  opacity: 0.9;
+}
+
+.camera-preview:hover {
+  opacity: 1;
+  transform: scale(1.05);
+}
+
+/* 远程操控按钮激活状态 */
+.remote-control-btn.active {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%) !important;
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(238, 90, 36, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(238, 90, 36, 0);
+  }
+}
+
+/* 手势状态指示器动画 */
+#gesture-status {
+  transition: all 0.3s ease;
+}
+
+/* 摄像头预览中的手势识别画布 */
+#gesture-canvas {
+  pointer-events: none;
+}
+
+/* ====== 图表手势反馈层 ====== */
+
+/* 手势反馈叠加层 */
+.gesture-chart-overlay {
+  transition: opacity 0.3s ease;
+}
+
+/* 滚动方向箭头动画 */
+.gesture-arrow {
+  filter: drop-shadow(0 0 20px rgba(67, 233, 123, 0.4));
+  animation: arrow-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes arrow-pulse {
+  0% {
+    filter: drop-shadow(0 0 10px rgba(67, 233, 123, 0.3));
+  }
+  100% {
+    filter: drop-shadow(0 0 30px rgba(67, 233, 123, 0.6));
+  }
+}
+
+/* 缩放指示环动画 */
+.gesture-zoom-ring {
+  position: absolute;
+  animation: ring-pulse 1s ease-in-out infinite alternate;
+}
+
+@keyframes ring-pulse {
+  0% {
+    box-shadow: 0 0 10px rgba(68, 138, 255, 0.2);
+  }
+  100% {
+    box-shadow: 0 0 30px rgba(68, 138, 255, 0.5);
+  }
+}
+
+/* 手势光标 */
+.gesture-cursor {
+  z-index: 10002;
+  transition: left 0.08s ease-out, top 0.08s ease-out, opacity 0.15s;
+}
+
+/* 操作文字标签 */
+.gesture-label {
+  z-index: 10002;
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* 摄像头预览中的模式提示 */
+#gesture-overlay-hint span:last-child {
+  transition: color 0.3s ease;
+}

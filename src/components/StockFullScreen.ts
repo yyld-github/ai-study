@@ -1,8 +1,9 @@
 import { KLineChartPro, ChartProOptions, SymbolInfo, Period, Datafeed } from '@klinecharts/pro'
-import { KLineData } from 'klinecharts'
+import { KLineData, init as initChart } from 'klinecharts'
 import { aiAnalysisService } from '../services/aiAnalysisService'
 import { datafeedService } from '../services/datafeedService'
 import { AIAnalysisResponse, KLineData as ServiceKLineData, DatafeedType } from '../services/types'
+import { GestureControl, GestureVisualFeedback } from '../services/gestureService'
 
 export interface StockFullScreenOptions {
   ticker: string
@@ -204,6 +205,18 @@ export class StockFullScreen {
   private currentTicker: string = ''
   private currentName: string = ''
   private currentKlineData: KLineData[] = []
+  // 手势远程操控相关
+  private gestureControl: GestureControl | null = null
+  private isRemoteControlActive: boolean = false
+  private cameraPreview: HTMLElement | null = null
+  private remoteControlBtn: HTMLButtonElement | null = null
+  private gestureStatusEl: HTMLElement | null = null
+  // 图表手势反馈层
+  private gestureOverlay: HTMLElement | null = null
+  private gestureArrow: HTMLElement | null = null
+  private gestureZoomRing: HTMLElement | null = null
+  private gestureCursor: HTMLElement | null = null
+  private gestureLabel: HTMLElement | null = null
 
   render(container: HTMLElement, options: StockFullScreenOptions) {
     this.currentTicker = options.ticker
@@ -250,6 +263,11 @@ export class StockFullScreen {
           (${options.changePercent !== undefined ? (options.changePercent >= 0 ? '+' : '') + options.changePercent.toFixed(2) + '%' : ''})
         </span>
       ` : ''}
+      <!-- 手势状态指示器 -->
+      <span id="gesture-status" style="display: none; font-size: 13px; padding: 3px 10px; border-radius: 12px; background: #e8f5e9; color: #2e7d32; font-weight: 500; align-items: center; gap: 4px;">
+        <span>🖐</span>
+        <span id="gesture-status-text">待命</span>
+      </span>
     `
 
     // AI分析按钮
@@ -270,6 +288,25 @@ export class StockFullScreen {
     aiBtn.onmouseover = () => { aiBtn.style.transform = 'scale(1.05)' }
     aiBtn.onmouseout = () => { aiBtn.style.transform = 'scale(1)' }
     aiBtn.onclick = () => this.toggleAiPanel()
+
+    // 远程操控按钮（手势识别开关）
+    this.remoteControlBtn = document.createElement('button')
+    this.remoteControlBtn.className = 'remote-control-btn'
+    this.remoteControlBtn.innerHTML = '🖐 远程操控'
+    this.remoteControlBtn.style.cssText = `
+      background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+      border: none;
+      color: white;
+      font-size: 14px;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.3s;
+      margin-right: 10px;
+    `
+    this.remoteControlBtn.onmouseover = () => { if (this.remoteControlBtn) this.remoteControlBtn.style.transform = 'scale(1.05)' }
+    this.remoteControlBtn.onmouseout = () => { if (this.remoteControlBtn) this.remoteControlBtn.style.transform = 'scale(1)' }
+    this.remoteControlBtn.onclick = () => this.toggleRemoteControl()
 
     // 关闭按钮
     const closeBtn = document.createElement('button')
@@ -294,6 +331,7 @@ export class StockFullScreen {
 
     const headerActions = document.createElement('div')
     headerActions.style.cssText = 'display: flex; align-items: center;'
+    headerActions.appendChild(this.remoteControlBtn)
     headerActions.appendChild(aiBtn)
     headerActions.appendChild(closeBtn)
 
@@ -319,6 +357,131 @@ export class StockFullScreen {
       transition: all 0.3s;
     `
     mainContent.appendChild(chartContainer)
+
+    // 创建摄像头预览层（手势识别用，默认隐藏）
+    this.cameraPreview = document.createElement('div')
+    this.cameraPreview.className = 'camera-preview'
+    this.cameraPreview.style.cssText = `
+      position: absolute;
+      bottom: 20px;
+      right: 20px;
+      width: 240px;
+      height: 180px;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+      border: 2px solid rgba(255, 255, 255, 0.3);
+      z-index: 10001;
+      display: none;
+      background: #000;
+    `
+    this.cameraPreview.innerHTML = `
+      <video id="gesture-video" style="width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);"></video>
+      <canvas id="gesture-canvas" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1);"></canvas>
+      <div id="gesture-overlay-hint" style="position: absolute; top: 6px; left: 6px; right: 6px; display: flex; justify-content: space-between; pointer-events: none;">
+        <span style="background: rgba(0,0,0,0.6); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: 11px;">🖐 手势识别</span>
+        <span id="gesture-hint-text" style="background: rgba(0,0,0,0.6); color: #4caf50; padding: 2px 8px; border-radius: 10px; font-size: 11px;">待命</span>
+      </div>
+    `
+    this.cameraPreview.style.position = 'absolute'
+    chartContainer.style.position = 'relative'
+    chartContainer.appendChild(this.cameraPreview)
+
+    // 获取手势状态元素引用
+    this.gestureStatusEl = document.getElementById('gesture-status')
+
+    // 创建图表手势反馈层（叠加在K线图上，默认隐藏）
+    this.gestureOverlay = document.createElement('div')
+    this.gestureOverlay.className = 'gesture-chart-overlay'
+    this.gestureOverlay.style.cssText = `
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 9999;
+      pointer-events: none;
+      display: none;
+    `
+    // 滚动方向箭头
+    this.gestureArrow = document.createElement('div')
+    this.gestureArrow.className = 'gesture-arrow'
+    this.gestureArrow.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 80px;
+      height: 80px;
+      transform: translate(-50%, -50%);
+      font-size: 72px;
+      color: rgba(67, 233, 123, 0.7);
+      text-align: center;
+      line-height: 80px;
+      transition: opacity 0.2s;
+      opacity: 0;
+    `
+    // 缩放指示环
+    this.gestureZoomRing = document.createElement('div')
+    this.gestureZoomRing.className = 'gesture-zoom-ring'
+    this.gestureZoomRing.style.cssText = `
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 60px;
+      height: 60px;
+      border-radius: 50%;
+      border: 3px solid rgba(68, 138, 255, 0.6);
+      transform: translate(-50%, -50%);
+      transition: width 0.1s, height 0.1s, opacity 0.2s;
+      opacity: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      color: #fff;
+      font-weight: bold;
+      background: rgba(68, 138, 255, 0.15);
+    `
+    // 手势光标（跟随手部位置的小圆点）
+    this.gestureCursor = document.createElement('div')
+    this.gestureCursor.className = 'gesture-cursor'
+    this.gestureCursor.style.cssText = `
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(67, 233, 123, 0.9), rgba(67, 233, 123, 0.2));
+      box-shadow: 0 0 20px rgba(67, 233, 123, 0.5);
+      transform: translate(-50%, -50%);
+      transition: opacity 0.15s;
+      opacity: 0;
+      pointer-events: none;
+    `
+    // 操作文字标签
+    this.gestureLabel = document.createElement('div')
+    this.gestureLabel.className = 'gesture-label'
+    this.gestureLabel.style.cssText = `
+      position: absolute;
+      bottom: 60px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      padding: 6px 16px;
+      border-radius: 20px;
+      font-size: 14px;
+      font-weight: 500;
+      white-space: nowrap;
+      transition: opacity 0.3s;
+      opacity: 0;
+      pointer-events: none;
+    `
+
+    this.gestureOverlay.appendChild(this.gestureArrow)
+    this.gestureOverlay.appendChild(this.gestureZoomRing)
+    this.gestureOverlay.appendChild(this.gestureCursor)
+    this.gestureOverlay.appendChild(this.gestureLabel)
+    chartContainer.appendChild(this.gestureOverlay)
 
     // 创建AI分析面板（从右侧弹出）
     this.aiPanel = document.createElement('div')
@@ -363,6 +526,278 @@ export class StockFullScreen {
       }
     }
     document.addEventListener('keydown', handleEsc)
+  }
+
+  // ====== 手势远程操控 ======
+
+  /**
+   * 切换远程操控（手势识别）开关
+   */
+  private async toggleRemoteControl(): Promise<void> {
+    if (this.isRemoteControlActive) {
+      this.stopRemoteControl()
+    } else {
+      await this.startRemoteControl()
+    }
+  }
+
+  /**
+   * 开启远程操控（启动摄像头和手势识别）
+   */
+  private async startRemoteControl(): Promise<void> {
+    if (!this.cameraPreview || !this.remoteControlBtn) return
+
+    try {
+      // 获取视频和画布元素
+      const videoEl = this.cameraPreview.querySelector('#gesture-video') as HTMLVideoElement
+      const canvasEl = this.cameraPreview.querySelector('#gesture-canvas') as HTMLCanvasElement
+      if (!videoEl || !canvasEl) {
+        console.error('[Gesture] 找不到视频/画布元素')
+        return
+      }
+
+      // 设置画布尺寸
+      canvasEl.width = 640
+      canvasEl.height = 480
+
+      // 创建手势控制器
+      this.gestureControl = new GestureControl()
+      this.gestureControl.setCallbacks({
+        onScroll: (deltaX: number) => this.handleGestureScroll(deltaX),
+        onZoom: (scale: number) => this.handleGestureZoom(scale),
+        onStatusChange: (active: boolean, handCount: number) => this.handleGestureStatus(active, handCount),
+        onVisualFeedback: (feedback) => this.handleGestureVisualFeedback(feedback),
+      })
+
+      // 启动手势识别
+      await this.gestureControl.start(videoEl, canvasEl)
+
+      // 显示摄像头预览
+      this.cameraPreview.style.display = 'block'
+      // 显示图表手势反馈层
+      if (this.gestureOverlay) {
+        this.gestureOverlay.style.display = 'block'
+      }
+      this.isRemoteControlActive = true
+
+      // 更新按钮状态
+      this.remoteControlBtn.innerHTML = '🖐 关闭操控'
+      this.remoteControlBtn.style.background = 'linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%)'
+
+      // 显示状态指示器
+      if (this.gestureStatusEl) {
+        this.gestureStatusEl.style.display = 'inline-flex'
+        this.updateGestureStatusText('🖐 待命')
+      }
+
+      console.log('[Gesture] 远程操控已开启')
+    } catch (error) {
+      console.error('[Gesture] 启动远程操控失败:', error)
+      this.stopRemoteControl()
+      alert('启动手势识别失败：' + (error instanceof Error ? error.message : '未知错误'))
+    }
+  }
+
+  /**
+   * 关闭远程操控
+   */
+  private stopRemoteControl(): void {
+    if (this.gestureControl) {
+      this.gestureControl.stop()
+      this.gestureControl = null
+    }
+
+    this.isRemoteControlActive = false
+
+    // 隐藏摄像头预览
+    if (this.cameraPreview) {
+      this.cameraPreview.style.display = 'none'
+    }
+
+    // 隐藏图表手势反馈层
+    if (this.gestureOverlay) {
+      this.gestureOverlay.style.display = 'none'
+    }
+
+    // 恢复按钮状态
+    if (this.remoteControlBtn) {
+      this.remoteControlBtn.innerHTML = '🖐 远程操控'
+      this.remoteControlBtn.style.background = 'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)'
+    }
+
+    // 隐藏状态指示器
+    if (this.gestureStatusEl) {
+      this.gestureStatusEl.style.display = 'none'
+    }
+
+    console.log('[Gesture] 远程操控已关闭')
+  }
+
+  /**
+   * 处理手势滚动 - 连续平滑滚动
+   * deltaX 由 gestureService 每帧发送，直接映射到图表
+   */
+  private handleGestureScroll(deltaX: number): void {
+    // 通过 klinecharts 的 init() 获取容器上已存在的 Chart 实例
+    // KLineChartPro 内部也是使用 klinecharts 的 init() 创建图表，
+    // init() 通过 dom.id 从 instances map 中查找已有实例。
+    // KLineChartPro 内部创建的图表 DOM 元素是 .klinecharts-pro-widget，
+    // 它没有 id 属性，但 klinecharts 的 init() 会在创建时设置
+    // k-line-chart-id 属性。我们需要先设置 dom.id 为图表 id，
+    // 然后 init() 才能通过 dom.id 找到已有实例。
+    const container = document.getElementById('klinechart-pro-container')
+    if (!container) return
+    const widgetEl = container.querySelector('.klinecharts-pro-widget') as HTMLElement | null
+    if (!widgetEl) return
+    // 获取图表实例的 id（klinecharts 内部存储的 key）
+    const chartId = widgetEl.getAttribute('k-line-chart-id')
+    if (!chartId) {
+      console.warn('[Gesture] 未找到 k-line-chart-id 属性')
+      return
+    }
+    // 临时设置 dom.id 为图表 id，使 init() 能通过 dom.id 找到已有实例
+    widgetEl.id = chartId
+    const chart = initChart(widgetEl)
+    if (chart && typeof chart.scrollByDistance === 'function') {
+      chart.scrollByDistance(deltaX, 0)
+    } else {
+      console.warn('[Gesture] Chart 实例不可用', !!chart)
+    }
+  }
+
+  /**
+   * 处理手势缩放 - 连续平滑缩放
+   * ratio 由 gestureService 每帧发送
+   */
+  private handleGestureZoom(ratio: number): void {
+    // 通过 klinecharts 的 init() 获取容器上已存在的 Chart 实例
+    const container = document.getElementById('klinechart-pro-container')
+    if (!container) return
+    const widgetEl = container.querySelector('.klinecharts-pro-widget') as HTMLElement | null
+    if (!widgetEl) return
+    const chartId = widgetEl.getAttribute('k-line-chart-id')
+    if (!chartId) {
+      console.warn('[Gesture] 未找到 k-line-chart-id 属性')
+      return
+    }
+    widgetEl.id = chartId
+    const chart = initChart(widgetEl)
+    if (chart && typeof chart.zoomAtCoordinate === 'function') {
+      chart.zoomAtCoordinate(ratio, { x: 0, y: 0 }, 0)
+    } else {
+      console.warn('[Gesture] Chart 实例不可用', !!chart)
+    }
+  }
+
+  /**
+   * 处理手势可视化反馈 - 在图表上叠加方向箭头/缩放环/光标
+   */
+  private handleGestureVisualFeedback(feedback: GestureVisualFeedback): void {
+    if (!this.gestureArrow || !this.gestureZoomRing || !this.gestureCursor || !this.gestureLabel) return
+
+    // 将手部位置映射到图表容器坐标（水平翻转，因为摄像头是镜像的）
+    const container = this.gestureOverlay?.parentElement
+    if (!container) return
+    const rect = container.getBoundingClientRect()
+    const cursorX = (1 - feedback.handX) * rect.width
+    const cursorY = feedback.handY * rect.height
+
+    // 更新光标位置
+    this.gestureCursor.style.left = `${cursorX}px`
+    this.gestureCursor.style.top = `${cursorY}px`
+
+    if (feedback.mode === 'scroll') {
+      // ===== 滚动模式：显示方向箭头 =====
+      this.gestureArrow.style.opacity = '1'
+      this.gestureZoomRing.style.opacity = '0'
+      this.gestureCursor.style.opacity = '1'
+
+      // 根据滚动方向和强度设置箭头
+      const intensity = Math.min(1, Math.abs(feedback.scrollIntensity))
+      if (feedback.scrollIntensity > 0) {
+        this.gestureArrow.textContent = '→'
+        this.gestureArrow.style.color = `rgba(67, 233, 123, ${0.4 + intensity * 0.6})`
+        this.gestureArrow.style.transform = `translate(-50%, -50%) scale(${0.6 + intensity * 0.8})`
+      } else {
+        this.gestureArrow.textContent = '←'
+        this.gestureArrow.style.color = `rgba(67, 233, 123, ${0.4 + intensity * 0.6})`
+        this.gestureArrow.style.transform = `translate(-50%, -50%) scale(${0.6 + intensity * 0.8})`
+      }
+
+      // 操作标签
+      this.gestureLabel.style.opacity = '1'
+      this.gestureLabel.textContent = `👆 左右滑动 · 速度 ${(intensity * 100).toFixed(0)}%`
+
+      // 光标随强度变色
+      this.gestureCursor.style.background = `radial-gradient(circle, rgba(67, 233, 123, ${0.5 + intensity * 0.5}), rgba(67, 233, 123, 0.1))`
+      this.gestureCursor.style.boxShadow = `0 0 ${10 + intensity * 30}px rgba(67, 233, 123, ${0.3 + intensity * 0.5})`
+
+    } else if (feedback.mode === 'zoom') {
+      // ===== 缩放模式：显示缩放环 =====
+      this.gestureArrow.style.opacity = '0'
+      this.gestureZoomRing.style.opacity = '1'
+      this.gestureCursor.style.opacity = '1'
+
+      // 缩放环大小随比例变化
+      const baseSize = 50
+      const ringSize = baseSize * feedback.zoomRatio
+      this.gestureZoomRing.style.width = `${ringSize}px`
+      this.gestureZoomRing.style.height = `${ringSize}px`
+      this.gestureZoomRing.style.left = `${cursorX}px`
+      this.gestureZoomRing.style.top = `${cursorY}px`
+
+      // 缩放环颜色
+      if (feedback.zoomRatio > 1) {
+        this.gestureZoomRing.style.borderColor = 'rgba(67, 233, 123, 0.7)'
+        this.gestureZoomRing.style.background = 'rgba(67, 233, 123, 0.15)'
+        this.gestureZoomRing.textContent = '🔍+'
+      } else {
+        this.gestureZoomRing.style.borderColor = 'rgba(255, 107, 107, 0.7)'
+        this.gestureZoomRing.style.background = 'rgba(255, 107, 107, 0.15)'
+        this.gestureZoomRing.textContent = '🔍-'
+      }
+      this.gestureZoomRing.style.fontSize = `${Math.min(18, 12 * feedback.zoomRatio)}px`
+
+      // 操作标签
+      this.gestureLabel.style.opacity = '1'
+      this.gestureLabel.textContent = `🤏 捏合缩放 · ${feedback.zoomRatio.toFixed(2)}x`
+
+    } else {
+      // ===== 空闲模式：淡出所有反馈 =====
+      this.gestureArrow.style.opacity = '0'
+      this.gestureZoomRing.style.opacity = '0'
+      this.gestureCursor.style.opacity = '0'
+      this.gestureLabel.style.opacity = '0'
+    }
+  }
+
+  /**
+   * 处理手势状态变化（更新UI提示）
+   */
+  private handleGestureStatus(active: boolean, handCount: number): void {
+    if (!active || handCount === 0) {
+      this.updateGestureStatusText('🖐 待命')
+      this.updateHintText('待命')
+      return
+    }
+
+    if (handCount === 1) {
+      this.updateGestureStatusText('✋ 单手模式 · 左右滑动移动图表')
+      this.updateHintText('单手 · 左右滑动')
+    } else if (handCount === 2) {
+      this.updateGestureStatusText('🤲 双手模式 · 捏合缩放图表')
+      this.updateHintText('双手 · 捏合缩放')
+    }
+  }
+
+  private updateGestureStatusText(text: string): void {
+    const textEl = document.getElementById('gesture-status-text')
+    if (textEl) textEl.textContent = text
+  }
+
+  private updateHintText(text: string): void {
+    const hintEl = document.getElementById('gesture-hint-text')
+    if (hintEl) hintEl.textContent = text
   }
 
   // 切换AI分析面板
@@ -667,6 +1102,10 @@ export class StockFullScreen {
   }
 
   close() {
+    // 关闭远程操控（手势识别）
+    if (this.isRemoteControlActive) {
+      this.stopRemoteControl()
+    }
     if (this.overlay && this.overlay.parentNode) {
       this.overlay.parentNode.removeChild(this.overlay)
       this.overlay = null
